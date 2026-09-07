@@ -1,0 +1,51 @@
+# Home Assistant automation 2 of 2: the deadman.
+#
+# This file is a BARE MAPPING, ready to paste straight into
+# Settings > Automations > Create Automation > three dots > Edit in YAML,
+# with nothing to reshape. Select all, paste over the default content, save.
+#
+# BEFORE PASTING, change notify.mobile_app_... to your phone's notify service.
+#
+# This catches the one failure a push notification cannot: the orchestrator
+# dying partway through updating itself, with nothing left running to report it.
+# It is also what makes the silence of a successful run trustworthy. No news
+# genuinely means good news, because absent news is itself alarmed.
+#
+# KEEP IN STEP WITH THE TIMER. The trigger time should be roughly 90 minutes
+# after the OnCalendar line in pihole-autoupdate.timer, the weekday must match
+# it, and the 5400 second threshold below must match that gap. Change the
+# schedule in one place and not the other and you get a deadman that fires
+# every week on a healthy pair, or one that never fires at all.
+
+alias: Pi-hole auto-update deadman
+description: >-
+  The weekly update starts 03:00 Monday and reports SUCCESS when both nodes are
+  back and healthy. If nothing arrived by 04:30, the orchestrator died before it
+  could report. That is the one failure mode a push notification cannot cover,
+  so it is caught here instead.
+mode: single
+triggers:
+  - trigger: time
+    at: "04:30:00"
+conditions:
+  - condition: time
+    weekday:
+      - mon
+    note: The job only runs Mondays. Checking other days would alert every morning.
+  - "{{ state_attr('input_datetime.pi_hole_autoupdate_last_success', 'timestamp') is none or now().timestamp() - state_attr('input_datetime.pi_hole_autoupdate_last_success', 'timestamp') > 5400 }}"
+actions:
+  - action: notify.mobile_app_CHANGE_ME
+    data:
+      title: Pi-hole update never reported
+      message: >-
+        The 03:00 run did not report success by 04:30. The orchestrator may not
+        have come back. Check both VIPs answer DNS, then read
+        journalctl -u pihole-autoupdate on the orchestrator.
+  - action: persistent_notification.create
+    data:
+      notification_id: pihole_autoupdate_failure
+      title: Pi-hole update never reported
+      message: >-
+        The 03:00 Monday run did not report success by 04:30. Most likely the
+        orchestrator failed to come back from its own reboot. Check both VIPs
+        answer DNS, then read /var/log/pihole-autoupdate.log.

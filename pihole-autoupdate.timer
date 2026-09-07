@@ -1,0 +1,16 @@
+[Unit]
+Description=Weekly Pi-hole HA pair update
+
+[Timer]
+# CHANGE THE TIMEZONE AND TIME TO SUIT. The hosts themselves can stay on UTC:
+# systemd 252 and newer resolve the zone suffix and follow DST on their own.
+# Check what a change resolves to before trusting it:
+#   systemd-analyze calendar "Mon *-*-* 03:00:00 America/Los_Angeles"
+OnCalendar=Mon *-*-* 03:00:00 America/Los_Angeles
+AccuracySec=1min
+# Deliberately not Persistent: a missed run must NOT fire at an arbitrary
+# moment after a boot. DNS downtime belongs in the chosen window or nowhere.
+Persistent=false
+
+[Install]
+WantedBy=timers.target

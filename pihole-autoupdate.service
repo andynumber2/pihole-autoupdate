@@ -1,0 +1,12 @@
+[Unit]
+Description=Weekly Pi-hole HA pair update (pihole2 then pihole1)
+After=network-online.target keepalived.service pihole-FTL.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/pihole-autoupdate.sh
+TimeoutStartSec=5400
+# The run ends by rebooting this host, so systemd will be tearing everything
+# down anyway. Nothing here should be restarted on failure.
+Restart=no

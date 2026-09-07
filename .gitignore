@@ -1,0 +1,3 @@
+# The live config holds the webhook id and the real addresses of the pair.
+# Only the .example version belongs in the repo.
+pihole-autoupdate.conf

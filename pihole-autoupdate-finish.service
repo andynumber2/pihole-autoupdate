@@ -1,0 +1,13 @@
+[Unit]
+Description=Report the result of a Pi-hole auto-update that ended in a reboot
+After=network-online.target keepalived.service pihole-FTL.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/pihole-autoupdate-finish.sh
+TimeoutStartSec=900
+Restart=no
+
+[Install]
+WantedBy=multi-user.target

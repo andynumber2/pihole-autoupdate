@@ -1,0 +1,74 @@
+# Configuration for the Pi-hole HA-pair auto-update workflow.
+#
+# Copy this to pihole-autoupdate.conf, fill in your own values, and install it
+# on BOTH nodes as /etc/pihole-autoupdate.conf, mode 0600 root:root.
+# install.sh does that for you.
+#
+# The real file is gitignored. The webhook id is the only secret in it, but the
+# addresses are worth keeping private too: together they map your network.
+#
+# Addresses below are RFC 5737 documentation addresses. Every one must change.
+
+# --- The pair -----------------------------------------------------------
+# NAME must match `hostname -s` on that machine. The scripts identify which
+# node they are running on by comparing against these two names.
+# IP is the node's own permanent address.
+# VIP is the keepalived virtual address that node owns at rest, meaning the
+# one it is MASTER for. Each node owns one; they back each other up.
+
+NODE1_NAME=pihole1
+NODE1_IP=192.0.2.11
+NODE1_VIP=192.0.2.21
+
+NODE2_NAME=pihole2
+NODE2_IP=192.0.2.12
+NODE2_VIP=192.0.2.22
+
+# The node that runs the weekly timer. It updates its peer FIRST and itself
+# LAST, so the orchestrator is the more protected of the two. Must equal one
+# of the two NAME values above.
+ORCHESTRATOR=pihole1
+
+# Interface the VIPs are bound to. Check with `ip -4 addr`. Commonly eth0 on
+# Raspberry Pi OS, sometimes end0 on newer Debian, wlan0 on wireless.
+VRRP_INTERFACE=eth0
+
+# Unix user the orchestrator connects to its peer as. Needs passwordless sudo
+# on the peer, which Raspberry Pi OS gives the default user already.
+SSH_USER=pi
+
+# --- Reboot policy ------------------------------------------------------
+# always    reboot on every run. Maximum boot-testing, maximum disruption.
+# required  reboot only when the kernel changed, or when REBOOT_MAX_AGE_DAYS
+#           is reached. Otherwise restart just the services running stale
+#           libraries. This is the recommended setting.
+# never     never reboot from this job; only restart stale services.
+#
+# 'required' and 'never' need the needrestart package, which install.sh adds.
+REBOOT_POLICY=required
+
+# Reboot anyway once a node has been up this many days, even with nothing
+# pending. This is a FLOOR on boot-testing, not a rate limit: it can only make
+# reboots more frequent, never less. Without it you can go months without
+# proving a node can still boot, and find out during an unplanned outage.
+# 0 disables it. Must be 0 when REBOOT_POLICY=never.
+REBOOT_MAX_AGE_DAYS=30
+
+# Services this job may restart when they are running against upgraded
+# libraries but no reboot is warranted. Space separated, and an allowlist on
+# purpose: needrestart also flags login sessions and getty units that must not
+# be restarted unattended. Anything stale but not listed here is logged only.
+# keepalived is restarted last because doing so briefly moves its VIP.
+RESTART_SERVICES="pihole-FTL keepalived"
+
+# --- Health checks ------------------------------------------------------
+# Domain resolved through each address to prove real DNS resolution rather
+# than just a listening port. Any reliably resolvable name works.
+PROBE_DOMAIN=google.com
+
+# --- Notifications ------------------------------------------------------
+# Home Assistant webhook that the "Pi-hole auto-update notifications"
+# automation listens on. Generate your own random id; anyone who knows it can
+# post to the automation. Leave empty to disable notifications entirely, in
+# which case results only reach /var/log/pihole-autoupdate.log and syslog.
+HA_WEBHOOK_URL="http://192.0.2.50:8123/api/webhook/pihole-autoupdate-CHANGE-ME"

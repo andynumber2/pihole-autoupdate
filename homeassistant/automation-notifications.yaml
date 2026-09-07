@@ -1,0 +1,89 @@
+# Home Assistant automation 1 of 2: notifications.
+#
+# This file is a BARE MAPPING, ready to paste straight into
+# Settings > Automations > Create Automation > three dots > Edit in YAML,
+# with nothing to reshape. Select all, paste over the default content, save.
+#
+# BEFORE PASTING, change two things:
+#   webhook_id             to the id you generated, matching HA_WEBHOOK_URL in
+#                          /etc/pihole-autoupdate.conf on the nodes
+#   notify.mobile_app_...  to your phone's notify service. Find yours under
+#                          Developer Tools > Actions, searching "notify".
+#
+# Requires the helper created first, or the SUCCESS branch silently does
+# nothing and the deadman then fires every week on a healthy pair:
+#   Settings > Devices & Services > Helpers > Create Helper > Date and/or time
+#   Name it exactly: Pi-hole autoupdate last success
+#   Tick both date and time.
+#   That name produces input_datetime.pi_hole_autoupdate_last_success, which is
+#   what the YAML below expects. Note "pi_hole" with an underscore.
+#
+# Only problems are reported. FAIL and ABORT push to the phone. SUCCESS is
+# silent and exists solely to stamp the timestamp the deadman reads. The nodes
+# never send START or PROGRESS; those stay in /var/log/pihole-autoupdate.log on
+# the orchestrator. A run that works produces no notification of any kind.
+
+alias: Pi-hole auto-update notifications
+description: >-
+  Receives status posts from the weekly Pi-hole update job running on the
+  orchestrator node. FAIL and ABORT push to the phone; SUCCESS is silent and
+  only stamps the deadman timestamp. A clean run notifies nothing.
+mode: queued
+max: 10
+triggers:
+  - trigger: webhook
+    webhook_id: pihole-autoupdate-CHANGE-ME
+    allowed_methods:
+      - POST
+    local_only: true
+    note: >-
+      The webhook id is the only secret here. It lives in
+      /etc/pihole-autoupdate.conf on the nodes, mode 0600.
+variables:
+  status: "{{ trigger.json.status | default('UNKNOWN') }}"
+  src_host: "{{ trigger.json.host | default('unknown') }}"
+  msg: "{{ trigger.json.message | default('no message supplied') }}"
+actions:
+  - choose:
+      - conditions:
+          - "{{ status in ['FAIL', 'ABORT'] }}"
+        sequence:
+          - action: notify.mobile_app_CHANGE_ME
+            data:
+              title: "Pi-hole update {{ status }}"
+              message: "{{ src_host }}: {{ msg }}"
+            note: >-
+              The only push. DNS is degraded or a node is stuck, so this is
+              worth an interruption.
+          - action: persistent_notification.create
+            data:
+              notification_id: pihole_autoupdate_failure
+              title: "Pi-hole update {{ status }}"
+              message: "{{ src_host }}: {{ msg }}"
+      - conditions:
+          - "{{ status == 'SUCCESS' }}"
+        sequence:
+          - action: input_datetime.set_datetime
+            target:
+              entity_id: input_datetime.pi_hole_autoupdate_last_success
+            data:
+              datetime: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+            note: >-
+              The deadman reads this timestamp. Nothing else writes it, and it
+              is the only reason SUCCESS is sent at all.
+          - action: persistent_notification.dismiss
+            data:
+              notification_id: pihole_autoupdate_failure
+            note: >-
+              Deliberately no notification is created here. A run that worked
+              should be completely silent; the timestamp above is the record.
+  default:
+    - action: persistent_notification.create
+      data:
+        notification_id: pihole_autoupdate_status
+        title: "Pi-hole update: unrecognised status {{ status }}"
+        message: "{{ src_host }}: {{ msg }}"
+      note: >-
+        Only unexpected payloads reach here. The nodes send nothing but
+        SUCCESS, FAIL and ABORT, so anything else means something is wrong with
+        the sender rather than with the Pi-holes.
