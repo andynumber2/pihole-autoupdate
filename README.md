@@ -7,7 +7,9 @@ first half fails, so one working DNS server is always left standing.
 Written for a two-node pair with two keepalived VIPs, one owned by each node,
 with clients pointed at both.
 
-## How it decides it is safe
+Alerting done via Home Assistant.
+
+## Update Logic
 
 1. Refuse to start if the last run failed and nobody acknowledged it.
 2. Verify **both** nodes before touching either one. Abort if either is unhealthy.
@@ -24,17 +26,6 @@ with clients pointed at both.
 6. Only then update the orchestrator itself.
 7. The orchestrator's reboot kills the script mid-run, so a boot-time unit
    re-verifies both nodes and sends the final verdict.
-
-The reboot is scheduled with `systemd-run --on-active=5` rather than
-`shutdown -r now`. A bare shutdown tears down the SSH connection mid-command,
-and the orchestrator cannot then tell success from a dropped link.
-
-Every address is a literal IP from the config, never a hostname. DNS is the
-service being restarted, so resolving a name to decide whether DNS works would
-be circular.
-
-Health is judged by real `dig` queries, not by whether a process is running. A
-`pihole-FTL` that is running but not answering fails these checks.
 
 ## Reboot policy
 
@@ -58,18 +49,6 @@ reboots more frequent, never less. A rate limiter would leave a kernel security
 update landing early in the window unapplied for the rest of it.
 `REBOOT_POLICY=never` with a non-zero floor is contradictory and is rejected at
 startup.
-
-`required` and `never` need the `needrestart` package, which `install.sh`
-installs along with a drop-in setting `$nrconf{restart} = 'l'`. Without that
-drop-in, needrestart prompts during apt runs and would hang an unattended 3am
-update until it timed out. If needrestart is missing at run time the
-orchestrator aborts at preflight rather than silently never rebooting again.
-
-Services running against upgraded libraries are a restart reason, not a reboot
-reason: seconds of disruption rather than a minute. Only units named in
-`RESTART_SERVICES` are touched, because needrestart also flags login sessions
-and getty units that must not be restarted unattended. `keepalived` is
-restarted last, since doing so briefly moves its VIP.
 
 To see what the next run would decide, on either node:
 
@@ -99,13 +78,7 @@ To see what the next run would decide, on either node:
 - Home Assistant, for notifications. Optional: leave `HA_WEBHOOK_URL` empty and
   results only go to the log and syslog.
 
-## The keepalived topology this assumes
-
-This software never writes `keepalived.conf`. It reads the state that config
-produces, so what follows is a set of requirements on your config, not something
-the installer sets up. See keepalived's own documentation for the syntax.
-
-### The arrangement
+## Assumed Keepalived topology
 
 Two nodes, **two** virtual IPs. Each node is MASTER for one VIP and BACKUP for
 the other, so in normal operation both nodes carry one VIP each and both are
@@ -117,23 +90,6 @@ actively serving. Clients are configured with both VIPs as their DNS servers.
 | VIP it owns at rest | 192.0.2.21 | 192.0.2.22 |
 | MASTER for | 192.0.2.21, priority 255 | 192.0.2.22, priority 255 |
 | BACKUP for | 192.0.2.22, priority 254 | 192.0.2.21, priority 254 |
-
-When one node goes down for its update, the other takes over its VIP and holds
-both until it returns, so at no point is any VIP unserved. That is the whole
-basis of the safety argument.
-
-### Why a single-VIP setup will not work with this software
-
-Whether one floating VIP or two is the better keepalived design is a question
-about keepalived, and out of scope here. This is only about what this software
-requires.
-
-`pihole-node.sh verify` requires each node to have its own VIP bound to its
-interface. In a single-VIP active/passive setup the backup node has no VIP bound
-while the master is healthy, so that check can never pass there, preflight fails
-every time, and no update ever runs. Supporting active/passive would mean
-changing what `verify` considers healthy, which is a code change, not a config
-change.
 
 ### What your config must provide
 
@@ -149,17 +105,6 @@ change.
 
 The `interface` those instances bind to must match `VRRP_INTERFACE` in
 `pihole-autoupdate.conf`.
-
-### Checking what you actually have
-
-On each node, confirm it carries exactly one VIP and that it is the one you
-named as that node's VIP:
-
-    ip -4 addr show dev eth0
-
-Each node should show its own address plus one `secondary` VIP. If one node
-shows both VIPs and the other shows none, the pair has not settled; check that
-preemption is working and that `pihole-FTL` is running on both.
 
 ## Fresh install
 
@@ -183,21 +128,11 @@ node. Either order; neither install touches the other machine.
 
     scp -rp . <user>@<node>:/tmp/pihole-au-src
 
-The `-p` matters. Common transfer paths strip the executable bit (GitHub's
-"Download ZIP", `rsync` without `-p`), and the failure then looks like a missing
-file rather than a permissions problem. On each node:
+Then, on each node:
 
     cd /tmp/pihole-au-src
     chmod +x *.sh
     sudo ./install.sh --no-timer
-
-It works out this machine's role from its hostname and installs only what that
-role needs, ending with a health check and the current reboot decision.
-
-**Use `--no-timer` here.** Armed now, the schedule could fire before the SSH key
-exists (step 3) and before Home Assistant is listening (step 4). That run fails,
-writes the failure latch, and alerts nowhere, which then blocks step 5 until you
-delete the latch file. Step 6 arms it once everything is proven.
 
 ### 3. Create the SSH key to the peer
 
@@ -211,18 +146,11 @@ those on the peer, then confirm:
 
     sudo /usr/local/sbin/pihole-autoupdate-setup-peer-key.sh --test
 
-The key is pinned to a forced command, so it can only run `verify` or `update`.
-It cannot open a shell even if it leaks.
-
 ### 4. Set up Home Assistant
-
-**The helper first**, or the SUCCESS branch silently does nothing and the
-deadman then fires every week on a healthy pair.
 
 **Settings > Devices & Services > Helpers > Create Helper > Date and/or time**.
 Tick both date and time. Name it exactly `Pi-hole autoupdate last success`,
-which produces `input_datetime.pi_hole_autoupdate_last_success`. Note the
-underscore in `pi_hole`; that is the id the automations reference.
+which produces `input_datetime.pi_hole_autoupdate_last_success`.
 
 Then create two automations. For each, **Settings > Automations > Create
 Automation > Create new automation > three dots > Edit in YAML**, then select
@@ -233,8 +161,7 @@ all and paste the file over the default content:
 | `homeassistant/automation-notifications.yaml` | receives status posts, pushes only on failure |
 | `homeassistant/automation-deadman.yaml` | alerts if a run never reports at all |
 
-Both files are bare mappings, so they paste in with nothing to reshape. In each,
-change `notify.mobile_app_CHANGE_ME` to your phone's notify service, findable
+In each, change `notify.mobile_app_CHANGE_ME` to your phone's notify service, findable
 under **Developer Tools > Actions** by searching `notify`. In the notifications
 one, also set `webhook_id` to the id you generated in step 1.
 
@@ -252,11 +179,6 @@ Then, when you can watch it, run the real thing once:
 
     sudo systemctl start pihole-autoupdate.service
     journalctl -u pihole-autoupdate.service -f
-
-With the shipped default of `required`, freshly updated nodes have no pending
-kernel and little uptime, so usually **neither node reboots** and the run takes
-about a minute. With a kernel update pending or the age floor reached, it
-reboots each node in turn and takes closer to ten minutes.
 
 A successful run is silent. Confirm it worked by checking that
 `input_datetime.pi_hole_autoupdate_last_success` updated, and:
@@ -346,8 +268,7 @@ reported.
 ## The failure latch
 
 Any failure writes `/var/lib/pihole-autoupdate/last-failure`. While that file
-exists the next run refuses to start and sends an `ABORT`, so an already
-half-broken pair is not updated again a week later.
+exists the next run refuses to start and sends an `ABORT`.
 
 Clear it once the problem is fixed:
 
@@ -376,12 +297,3 @@ Clear it once the problem is fixed:
 
     # turn the whole thing off
     sudo systemctl disable --now pihole-autoupdate.timer
-
-## Scope
-
-This updates and verifies the two nodes. It does not touch `keepalived.conf`,
-and it does not synchronise blocklists or local DNS records between the nodes.
-
-The reboot path only runs when a kernel upgrade is pending or the age floor is
-reached, so a first install and a test run on current nodes will not exercise
-it. The first kernel update after installation is when it first runs for real.
